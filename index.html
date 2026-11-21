@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Crown &amp; Cinder — Medieval Turn-Based Roguelite</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-banner">
+      <div class="brand-title">
+        <span id="brand-emblem"></span>
+        <div>
+          <h1>Crown &amp; Cinder</h1>
+          <div class="brand-subtitle">Turn-Based Medieval Roguelite &bull; 1 Class Per Player &bull; Max 2 Players</div>
+        </div>
+      </div>
+      <div class="header-meta" id="header-meta">
+        <span class="pill pill-gold" id="mode-pill">Lobby Setup</span>
+        <span class="pill hidden" id="diff-pill">Normal</span>
+        <span class="pill hidden" id="room-pill">Room: —</span>
+        <button class="btn btn-small hidden" id="btn-back-lobby">Return to Lobby</button>
+      </div>
+    </header>
+
+    <!-- === LOBBY VIEW === -->
+    <main id="lobby-view">
+      <div class="lobby-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Expedition Setup</h2>
+            <span class="pill pill-gold">Max 2 Players</span>
+          </div>
+
+          <div class="mode-tabs" id="mode-tabs">
+            <button class="mode-tab active" data-mode="solo">1 Player (Solo)</button>
+            <button class="mode-tab" data-mode="local">2 Players (Same Screen)</button>
+            <button class="mode-tab" data-mode="online">2 Players (Online P2P Room)</button>
+          </div>
+
+          <!-- Difficulty Selector -->
+          <div style="margin-bottom: 12px;">
+            <div class="muted" style="margin-bottom: 5px;">Difficulty Mode:</div>
+            <div class="mode-tabs" id="diff-tabs" style="margin-bottom: 6px;">
+              <button class="mode-tab" data-diff="easy">Easy</button>
+              <button class="mode-tab active" data-diff="normal">Normal</button>
+              <button class="mode-tab" data-diff="hard">Hard</button>
+            </div>
+            <div class="muted" id="diff-summary" style="font-size:0.8rem;"></div>
+          </div>
+
+          <div class="form-row">
+            <label for="p1-name">Player 1 Name</label>
+            <input type="text" id="p1-name" value="Sir Aldric" maxlength="20" />
+          </div>
+
+          <div class="form-row hidden" id="p2-name-row">
+            <label for="p2-name">Player 2 Name</label>
+            <input type="text" id="p2-name" value="Lady Rowan" maxlength="20" />
+          </div>
+
+          <div class="form-row">
+            <label for="run-seed">World Seed</label>
+            <input type="text" id="run-seed" class="mono" style="width: 130px;" />
+            <button class="btn btn-small" id="btn-roll-seed">Roll New Stats &amp; Seed</button>
+          </div>
+
+          <!-- Online P2P Room Controls -->
+          <div class="network-box hidden" id="online-panel">
+            <div class="form-row">
+              <label for="room-code">Room Code</label>
+              <input type="text" id="room-code" class="mono" value="IRON77" maxlength="12" style="width: 120px; text-transform: uppercase;" />
+              <button class="btn btn-small" id="btn-gen-code">Random Code</button>
+            </div>
+            <div class="form-row">
+              <button class="btn btn-primary" id="btn-host-room">Host Room (Player 1)</button>
+              <button class="btn btn-emerald" id="btn-join-room">Join Room (Player 2)</button>
+              <button class="btn btn-crimson hidden" id="btn-leave-room">Disconnect</button>
+            </div>
+            <div class="pill" id="network-status" style="width: 100%; justify-content: flex-start;">
+              Status: Not connected (WebRTC + Local Tab Sync; strictly 2 players max)
+            </div>
+          </div>
+
+          <!-- Selected Classes Summary -->
+          <div class="network-box" id="chosen-summary"></div>
+
+          <div style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <button class="btn btn-primary" id="btn-start-game">Begin Expedition</button>
+            <span class="muted" id="start-hint" style="align-self: center;">
+              Each run randomizes hero stats, skill numbers, stage paths &amp; final boss.
+            </span>
+          </div>
+        </section>
+
+        <!-- Class Selection Grid -->
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Choose Your Class</h2>
+            <span class="muted" id="class-pick-hint">Each player picks 1 class (stats roll per seed)</span>
+          </div>
+          <div class="roster-preview-grid" id="roster-preview-grid"></div>
+        </section>
+      </div>
+    </main>
+
+    <!-- === GAME VIEW === -->
+    <main id="game-view" class="hidden">
+      <section class="stage-bar">
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <span class="pill pill-gold" id="stage-label">Stage 1 / 8</span>
+          <span class="pill" id="seed-label">Seed #—</span>
+          <span class="pill pill-gold" id="gold-label">45 Gold</span>
+          <span class="pill" id="boss-rumor-label">Boss: —</span>
+        </div>
+        <div class="stage-nodes" id="stage-nodes"></div>
+      </section>
+
+      <div class="game-layout">
+        <div>
+          <section class="panel" id="stage-viewport"></section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Your Champion(s)</h3>
+              <span class="muted" id="turn-banner">Ready</span>
+            </div>
+            <div class="party-grid" id="party-grid"></div>
+          </section>
+        </div>
+
+        <aside>
+          <section class="panel sidebar-section">
+            <div class="panel-header">
+              <h3>Party Satchel</h3>
+              <span class="muted" id="item-count-label">0 items</span>
+            </div>
+            <div class="inventory-list" id="inventory-list"></div>
+          </section>
+
+          <section class="panel sidebar-section">
+            <div class="panel-header">
+              <h3>Passive Relics</h3>
+              <span class="muted" id="relic-count-label">0 relics</span>
+            </div>
+            <div class="relic-list" id="relic-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h3>Expedition Chronicle</h3>
+            </div>
+            <div class="chronicle-log" id="chronicle-log"></div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
