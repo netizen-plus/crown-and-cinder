@@ -1,10 +1,15 @@
 import { MAX_PLAYERS } from './data.js';
 
-const APP_ID = 'velala-medieval-roguelite-v2';
+const PEER_PREFIX = 'velala-crown-cinder-room-';
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' }
+];
 
 /**
- * Dual-transport serverless 2-player room networking:
- * 1) Trystero (WebRTC over public Nostr relays) for remote play across browsers/devices.
+ * Dual-transport 2-player room networking:
+ * 1) PeerJS (WebRTC DataChannel via PeerJS cloud signaling) for remote play across browsers/devices.
  * 2) BroadcastChannel for instant local multi-tab testing or offline 2-tab play.
  * Strictly enforces MAX_PLAYERS = 2 (1 Host + 1 Guest). Any 3rd peer is rejected.
  */
@@ -23,10 +28,11 @@ export class RoomNetwork {
     this.statusText = 'Not connected';
 
     this.bc = null;
-    this.trysteroRoom = null;
-    this.sendTrystero = null;
+    this.peer = null;
+    this.peerConnections = new Map(); // remotePeerId -> DataConnection
     this.seenMessageIds = new Set();
     this.heartbeatTimer = null;
+    this.retryTimer = null;
   }
 
   generatePeerId() {
@@ -34,6 +40,10 @@ export class RoomNetwork {
       return crypto.randomUUID().slice(0, 12);
     }
     return Math.random().toString(36).slice(2, 14);
+  }
+
+  getHostSignalId() {
+    return `${PEER_PREFIX}${this.roomCode}`;
   }
 
   async hostRoom(roomCode, playerName) {
@@ -44,8 +54,9 @@ export class RoomNetwork {
     this.guestPeerId = null;
     this.guestName = null;
     this.connected = false;
-    this.updateStatus(`Hosting room ${this.roomCode} (1/2 players — waiting for Player 2...)`);
-    await this.setupTransports();
+    this.updateStatus(`Connecting to signaling server for room ${this.roomCode}...`);
+    this.setupBroadcastChannel();
+    this.setupPeerHost();
   }
 
   async joinRoom(roomCode, playerName) {
@@ -58,7 +69,8 @@ export class RoomNetwork {
     this.connected = false;
     this.updateStatus(`Searching for room ${this.roomCode}...`);
 
-    await this.setupTransports();
+    this.setupBroadcastChannel();
+    this.setupPeerGuest();
     this.sendHello();
 
     this.heartbeatTimer = setInterval(() => {
@@ -71,7 +83,7 @@ export class RoomNetwork {
     }, 1600);
   }
 
-  async setupTransports() {
+  setupBroadcastChannel() {
     if (typeof BroadcastChannel !== 'undefined') {
       this.bc = new BroadcastChannel(`velala_room_${this.roomCode}`);
       this.bc.onmessage = (event) => {
@@ -80,26 +92,110 @@ export class RoomNetwork {
         }
       };
     }
+  }
 
-    try {
-      const mod = await Promise.race([
-        import('https://esm.sh/trystero/nostr'),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Trystero timeout')), 6000))
-      ]);
-      if (mod && typeof mod.joinRoom === 'function') {
-        this.trysteroRoom = mod.joinRoom({ appId: APP_ID }, this.roomCode);
-        const [sendPacket, onPacket] = this.trysteroRoom.makeAction('game_pkt');
-        this.sendTrystero = sendPacket;
-        onPacket((data) => this.handleIncoming(data));
-        this.trysteroRoom.onPeerJoin(() => {
-          if (this.role === 'guest' && !this.connected) this.sendHello();
-        });
-      }
-    } catch (err) {
-      if (this.callbacks.onLog) {
-        this.callbacks.onLog(`WebRTC relay unavailable (${err.message}). Local multi-tab channel active.`);
-      }
+  setupPeerHost() {
+    if (typeof window === 'undefined' || typeof window.Peer !== 'function') {
+      this.updateStatus(`P2P library failed to load (local multi-tab only).`);
+      return;
     }
+
+    const peer = new window.Peer(this.getHostSignalId(), {
+      config: { iceServers: ICE_SERVERS }
+    });
+    this.peer = peer;
+
+    peer.on('open', () => {
+      if (this.peer !== peer || this.role !== 'host') return;
+      if (!this.connected) {
+        this.updateStatus(`Hosting room ${this.roomCode} (1/2 players — waiting for Player 2...)`);
+      }
+    });
+
+    peer.on('connection', (conn) => {
+      if (this.peer !== peer || this.role !== 'host') return;
+      this.attachPeerConnection(conn);
+    });
+
+    peer.on('error', (err) => {
+      if (this.peer !== peer) return;
+      if (err && err.type === 'unavailable-id') {
+        this.updateStatus(`Room ${this.roomCode} is already taken! Click "Random Code" and Host again.`);
+        return;
+      }
+      this.updateStatus(`P2P Host error (${err?.type || err?.message || 'unknown'}).`);
+    });
+  }
+
+  setupPeerGuest() {
+    if (typeof window === 'undefined' || typeof window.Peer !== 'function') {
+      this.updateStatus(`P2P library failed to load (local multi-tab only).`);
+      return;
+    }
+
+    const peer = new window.Peer({
+      config: { iceServers: ICE_SERVERS }
+    });
+    this.peer = peer;
+
+    const connectToHost = () => {
+      if (this.peer !== peer || this.role !== 'guest' || this.connected) return;
+      if (!peer.open || peer.destroyed) return;
+      const hostId = this.getHostSignalId();
+      if (this.peerConnections.has(hostId)) return;
+
+      const conn = peer.connect(hostId, { reliable: true });
+      this.attachPeerConnection(conn);
+    };
+
+    peer.on('open', () => {
+      if (this.peer !== peer || this.role !== 'guest') return;
+      connectToHost();
+      this.retryTimer = setInterval(() => {
+        if (this.connected || this.role !== 'guest' || this.peer !== peer) {
+          clearInterval(this.retryTimer);
+          this.retryTimer = null;
+          return;
+        }
+        connectToHost();
+      }, 2500);
+    });
+
+    peer.on('error', (err) => {
+      if (this.peer !== peer) return;
+      if (err && err.type === 'peer-unavailable') {
+        // Host may still be starting or room code doesn't exist yet; retry loop will try again.
+        this.peerConnections.delete(this.getHostSignalId());
+        if (!this.connected) {
+          this.updateStatus(`Searching for room ${this.roomCode} (waiting for Host)...`);
+        }
+        return;
+      }
+      this.updateStatus(`P2P Guest error (${err?.type || err?.message || 'unknown'}).`);
+    });
+  }
+
+  attachPeerConnection(conn) {
+    if (!conn) return;
+    this.peerConnections.set(conn.peer, conn);
+
+    conn.on('open', () => {
+      if (this.role === 'guest' && !this.connected) {
+        this.sendHello();
+      }
+    });
+
+    conn.on('data', (data) => {
+      if (data) this.handleIncoming(data);
+    });
+
+    conn.on('close', () => {
+      this.peerConnections.delete(conn.peer);
+    });
+
+    conn.on('error', () => {
+      this.peerConnections.delete(conn.peer);
+    });
   }
 
   sendRaw(payload) {
@@ -114,10 +210,12 @@ export class RoomNetwork {
         this.bc.postMessage(packet);
       } catch (_) {}
     }
-    if (this.sendTrystero) {
-      try {
-        this.sendTrystero(packet);
-      } catch (_) {}
+    for (const conn of this.peerConnections.values()) {
+      if (conn.open) {
+        try {
+          conn.send(packet);
+        } catch (_) {}
+      }
     }
   }
 
@@ -230,6 +328,10 @@ export class RoomNetwork {
           clearInterval(this.heartbeatTimer);
           this.heartbeatTimer = null;
         }
+        if (this.retryTimer) {
+          clearInterval(this.retryTimer);
+          this.retryTimer = null;
+        }
         this.updateStatus(`Joined Room ${this.roomCode}: 2/2 Players (${this.hostName} & ${this.playerName})`);
         if (this.callbacks.onJoined) this.callbacks.onJoined(this.hostName, packet.state, packet.lobbyConfig);
         return;
@@ -269,22 +371,29 @@ export class RoomNetwork {
   }
 
   async disconnect() {
-    if (this.role && (this.bc || this.sendTrystero)) {
+    if (this.role && (this.bc || this.peerConnections.size > 0)) {
       this.sendRaw({ type: 'LEAVE' });
     }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    if (this.retryTimer) {
+      clearInterval(this.retryTimer);
+      this.retryTimer = null;
+    }
     if (this.bc) {
       try { this.bc.close(); } catch (_) {}
       this.bc = null;
     }
-    if (this.trysteroRoom) {
-      try { await this.trysteroRoom.leave(); } catch (_) {}
-      this.trysteroRoom = null;
+    for (const conn of this.peerConnections.values()) {
+      try { conn.close(); } catch (_) {}
     }
-    this.sendTrystero = null;
+    this.peerConnections.clear();
+    if (this.peer) {
+      try { this.peer.destroy(); } catch (_) {}
+      this.peer = null;
+    }
     this.role = null;
     this.connected = false;
     this.guestPeerId = null;
