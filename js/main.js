@@ -10,10 +10,12 @@ import {
 import {
   generateRolledRoster,
   getHeroSkill,
+  getWerewolfBerserkMult,
   estimateHitDamage,
   createNewRun,
   choosePath,
   executeCombatAction,
+  executeNextEnemyStep,
   selectReward,
   restAtCamp,
   buyShopItem,
@@ -34,7 +36,15 @@ let p1Class = 'knight';
 let p2Class = 'wizard';
 let armedAction = null; // { kind: 'SKILL'|'ITEM', id: string, targetType: string }
 let pendingCombatSnap = null;
-let pendingVfxHint = null;
+let lastPlayedAnimSeq = 0;
+let enemyStepTimer = null;
+
+function clearEnemyStepTimer() {
+  if (enemyStepTimer) {
+    clearTimeout(enemyStepTimer);
+    enemyStepTimer = null;
+  }
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -46,17 +56,6 @@ function snapshotCombatState() {
     heroes: gameState.party.map((h) => ({ uid: h.uid, hp: h.hp, shield: h.shield })),
     enemies: gameState.combat.enemies.map((e) => ({ uid: e.uid, hp: e.hp, shield: e.shield }))
   };
-}
-
-function inferSkillVfxKind(skill) {
-  if (!skill) return 'physical';
-  if (skill.enemyStatus && skill.enemyStatus.id === 'burn') return 'fire';
-  if (skill.damageType === 'nature') return 'nature';
-  if (skill.damageType === 'magic') return 'magic';
-  if (skill.damageType === 'support') {
-    return skill.healAmount || skill.partyHeal || skill.revivePct ? 'heal' : 'shield';
-  }
-  return 'physical';
 }
 
 // === NETWORK ===
@@ -276,6 +275,11 @@ function renderClassCards(rolledRoster) {
               <span>ATK <strong>${h.atk}</strong></span>
               <span>DEF <strong>${h.def}</strong></span>
             </div>
+            ${
+              h.passive
+                ? `<div class="passive-box"><strong>Passive — ${h.passive.name}:</strong> ${h.passive.desc}</div>`
+                : ''
+            }
             <ul class="skill-mini-list" style="margin-top:6px;">${basicHtml}</ul>
           </div>
           ${buttonsHtml}
@@ -421,6 +425,8 @@ function bindLobbyEvents() {
   });
 
   el('btn-back-lobby').addEventListener('click', () => {
+    clearEnemyStepTimer();
+    lastPlayedAnimSeq = 0;
     gameState = null;
     armedAction = null;
     pendingCombatSnap = null;
@@ -466,18 +472,16 @@ function applyAuthorizedAction(action, actorSlot) {
     const hero = gameState.party[action.heroIndex];
     if (!hero) return;
     if (gameState.mode === 'online' && hero.owner !== actorSlot) return;
+    clearEnemyStepTimer();
     pendingCombatSnap = snapshotCombatState();
-    if (action.payload.kind === 'SKILL') {
-      const sk = getHeroSkill(hero, action.payload.skillId);
-      pendingVfxHint = inferSkillVfxKind(sk);
-    } else if (action.payload.kind === 'DEFEND') {
-      pendingVfxHint = 'shield';
-    } else {
-      pendingVfxHint = 'heal';
-    }
     executeCombatAction(gameState, action.payload);
     armedAction = null;
+  } else if (action.type === 'STEP_ENEMY_TURN') {
+    if (gameState.phase !== 'COMBAT' || !gameState.combat || gameState.combat.turnPhase !== 'ENEMY_PHASE') return;
+    pendingCombatSnap = snapshotCombatState();
+    executeNextEnemyStep(gameState);
   } else if (action.type === 'CHOOSE_PATH') {
+    clearEnemyStepTimer();
     if (gameState.mode === 'online' && network.connected) {
       if (actorSlot === 1) gameState.votes.p1 = action.pathUid;
       else gameState.votes.p2 = action.pathUid;
@@ -531,6 +535,8 @@ function applyAuthorizedAction(action, actorSlot) {
     continueFromEvent(gameState);
   } else if (action.type === 'NEW_RUN') {
     if (gameState.mode === 'online' && actorSlot !== 1) return;
+    clearEnemyStepTimer();
+    lastPlayedAnimSeq = 0;
     const newSeed = Math.floor(Math.random() * 9000000) + 100000;
     lobbySeed = newSeed;
     gameState = createNewRun({
@@ -553,6 +559,20 @@ function applyAuthorizedAction(action, actorSlot) {
 }
 
 // === RENDERING ===
+function scheduleEnemyStepIfNeeded() {
+  clearEnemyStepTimer();
+  if (!gameState || gameState.phase !== 'COMBAT' || !gameState.combat) return;
+  if (gameState.combat.turnPhase !== 'ENEMY_PHASE') return;
+  if (gameState.mode === 'online' && network.role === 'guest') return;
+
+  enemyStepTimer = setTimeout(() => {
+    enemyStepTimer = null;
+    if (gameState && gameState.phase === 'COMBAT' && gameState.combat && gameState.combat.turnPhase === 'ENEMY_PHASE') {
+      dispatchAction({ type: 'STEP_ENEMY_TURN' });
+    }
+  }, 820);
+}
+
 function render() {
   if (!gameState) return;
   document.body.dataset.biome = gameState.currentBiome || 'plains';
@@ -561,11 +581,21 @@ function render() {
   renderSidebar();
   renderViewport();
 
-  if (pendingCombatSnap && gameState.phase === 'COMBAT') {
-    applyCombatAnimations(pendingCombatSnap);
+  if (gameState.phase === 'COMBAT' && gameState.combat) {
+    const anim = gameState.combat.lastAnim;
+    const shouldAnimate = anim && anim.seq !== lastPlayedAnimSeq;
+    if (shouldAnimate) {
+      lastPlayedAnimSeq = anim.seq;
+      applyCombatAnimations(pendingCombatSnap, anim);
+    } else if (pendingCombatSnap) {
+      applyCombatAnimations(pendingCombatSnap, null);
+    }
+    scheduleEnemyStepIfNeeded();
+  } else {
+    lastPlayedAnimSeq = 0;
+    clearEnemyStepTimer();
   }
   pendingCombatSnap = null;
-  pendingVfxHint = null;
 }
 
 function renderWebGLBannerHtml(biomeId, labelOverride = null) {
@@ -639,9 +669,16 @@ function renderHeaderAndStageBar() {
 
   const turnBanner = el('turn-banner');
   if (gameState.phase === 'COMBAT' && gameState.combat) {
-    const activeHero = gameState.party[gameState.combat.activeHeroIdx];
-    const ownerTag = gameState.mode === 'solo' ? '' : ` [Player ${activeHero.owner}]`;
-    turnBanner.textContent = `Round ${gameState.combat.round} — Active: ${activeHero.name}${ownerTag}`;
+    if (gameState.combat.turnPhase === 'ENEMY_PHASE') {
+      const acting = gameState.combat.enemies[gameState.combat.activeEnemyIdx];
+      turnBanner.textContent = `Round ${gameState.combat.round} — Enemy Turn: ${acting ? acting.name : 'Foes Acting...'}`;
+    } else {
+      const activeHero = gameState.party[gameState.combat.activeHeroIdx];
+      const ownerTag = gameState.mode === 'solo' || !activeHero ? '' : ` [Player ${activeHero.owner}]`;
+      turnBanner.textContent = activeHero
+        ? `Round ${gameState.combat.round} — Active: ${activeHero.name}${ownerTag}`
+        : `Round ${gameState.combat.round}`;
+    }
   } else {
     turnBanner.textContent = `Phase: ${gameState.phase.replace('_', ' ')}`;
   }
@@ -659,12 +696,15 @@ function renderStatusTags(statuses) {
 
 function renderPartyGrid() {
   const activeIdx =
-    gameState.phase === 'COMBAT' && gameState.combat ? gameState.combat.activeHeroIdx : -1;
+    gameState.phase === 'COMBAT' && gameState.combat && gameState.combat.turnPhase === 'HERO_PHASE'
+      ? gameState.combat.activeHeroIdx
+      : -1;
 
   el('party-grid').innerHTML = gameState.party
     .map((h, idx) => {
       const hpPct = Math.round((h.hp / h.maxHp) * 100);
       const mpPct = Math.round((h.mp / h.maxMp) * 100);
+      const shdPct = h.shield > 0 ? Math.min(100, Math.round((h.shield / Math.max(30, h.maxHp * 0.4)) * 100)) : 0;
       const isActive = idx === activeIdx;
       const isDead = h.hp <= 0;
       const ownerBadge =
@@ -679,11 +719,22 @@ function renderPartyGrid() {
                 <div style="font-weight:bold;color:var(--gold);font-size:0.95rem;">${h.name}</div>
                 <div class="muted" style="font-size:0.76rem;">${h.title}</div>
               </div>
-              ${ownerBadge}
+              <div style="display:flex;gap:4px;align-items:center;">
+                ${h.shield > 0 ? `<span class="pill pill-azure" style="font-size:0.7rem;padding:1px 6px;">🛡️ ${h.shield}</span>` : ''}
+                ${ownerBadge}
+              </div>
             </div>
+            ${
+              h.shield > 0
+                ? `<div class="bar-wrap">
+                     <div class="bar-label" style="color:#85d8ff;"><span>SHIELD</span><span>${h.shield}</span></div>
+                     <div class="bar-track"><div class="bar-fill bar-shield" style="width:${shdPct}%"></div></div>
+                   </div>`
+                : ''
+            }
             <div class="bar-wrap">
               <div class="bar-label">
-                <span>HP ${h.hp}/${h.maxHp}${h.shield > 0 ? ` (+${h.shield} Shd)` : ''}</span>
+                <span>HP ${h.hp}/${h.maxHp}</span>
                 <span>${isDead ? 'FALLEN' : `${hpPct}%`}</span>
               </div>
               <div class="bar-track"><div class="bar-fill bar-hp" style="width:${hpPct}%"></div></div>
@@ -697,6 +748,11 @@ function renderPartyGrid() {
               <span>DEF ${h.def}</span>
               <span>Skills ${h.skills.length}</span>
             </div>
+            ${
+              h.passive
+                ? `<div class="passive-box"><strong>${h.passive.name}:</strong> ${h.passive.desc}</div>`
+                : ''
+            }
             ${renderStatusTags(h.statuses)}
           </div>
         </div>
@@ -709,6 +765,7 @@ function renderSidebar() {
   const canUseItemsNow =
     gameState.phase === 'COMBAT' &&
     gameState.combat &&
+    gameState.combat.turnPhase === 'HERO_PHASE' &&
     canActForHero(gameState.party[gameState.combat.activeHeroIdx]);
 
   const totalQty = gameState.inventory.reduce((acc, i) => acc + i.qty, 0);
@@ -729,7 +786,7 @@ function renderSidebar() {
             </div>
             ${
               canUseItemsNow
-                ? `<button class="btn btn-small btn-emerald" data-use-item="${item.id}">Use</button>`
+                ? `<button class="btn btn-small btn-emerald" data-use-item="${item.id}" title="Free action — does not cost your turn">Use (Free)</button>`
                 : ''
             }
           </div>
@@ -896,8 +953,9 @@ function getTargetLabelInfo(targetType) {
 
 function renderCombat(vp) {
   const combat = gameState.combat;
-  const activeHero = gameState.party[combat.activeHeroIdx];
-  const canControl = canActForHero(activeHero);
+  const isEnemyPhase = combat.turnPhase === 'ENEMY_PHASE';
+  const activeHero = !isEnemyPhase && combat.activeHeroIdx >= 0 ? gameState.party[combat.activeHeroIdx] : null;
+  const canControl = !isEnemyPhase && canActForHero(activeHero);
   const biome = BIOMES[gameState.currentBiome] || BIOMES.plains;
 
   const enemySpriteSize = combat.enemies.length >= 3 ? 74 : 88;
@@ -906,14 +964,27 @@ function renderCombat(vp) {
     .map((h, idx) => {
       const hpPct = Math.round((h.hp / h.maxHp) * 100);
       const mpPct = Math.round((h.mp / h.maxMp) * 100);
+      const shdPct = h.shield > 0 ? Math.min(100, Math.round((h.shield / Math.max(30, h.maxHp * 0.4)) * 100)) : 0;
       const isDead = h.hp <= 0;
-      const isActive = idx === combat.activeHeroIdx;
+      const isActive = !isEnemyPhase && idx === combat.activeHeroIdx;
       const spriteCls = isDead ? 'sprite-dead' : 'sprite-alive';
+      const berserkPct =
+        h.id === 'werewolf' && !isDead ? Math.round((getWerewolfBerserkMult(h) - 1) * 100) : 0;
+      const treantHtml =
+        h.treant && h.treant.turns > 0 && !isDead
+          ? `<div class="treant-minion" title="Elder Treant attacks each turn & grants +8 Shield">${getSpriteSvg('treant', 36)}<span>Treant (${h.treant.turns}t)</span></div>`
+          : '';
+      const shieldHtml =
+        h.shield > 0 && !isDead
+          ? `<div class="shield-dome-aura"></div><div class="shield-crest" title="Active Shield absorbs ${h.shield} damage">🛡️ ${h.shield}</div>`
+          : '';
       return `
         <div class="unit-pedestal ${isActive ? 'active-turn' : ''} ${isDead ? 'dead' : ''}" data-battle-hero-idx="${idx}">
           <div class="target-overlay"><span class="target-float-tag"></span></div>
           ${isActive ? '<div class="pedestal-top-tag">★ ACTIVE TURN</div>' : ''}
+          ${treantHtml}
           <div class="pedestal-sprite-wrap ${spriteCls}">
+            ${shieldHtml}
             ${getSpriteSvg(h.id, 90)}
             <div class="ground-shadow"></div>
           </div>
@@ -922,9 +993,17 @@ function renderCombat(vp) {
               <strong style="color:var(--gold);font-size:0.86rem;">${h.name}</strong>
               ${gameState.mode !== 'solo' ? `<span class="pill" style="font-size:0.65rem;padding:0 4px;">P${h.owner}</span>` : ''}
             </div>
+            ${
+              h.shield > 0
+                ? `<div class="bar-wrap">
+                     <div class="bar-label" style="color:#85d8ff;"><span>SHIELD</span><span>${h.shield}</span></div>
+                     <div class="bar-track"><div class="bar-fill bar-shield" style="width:${shdPct}%"></div></div>
+                   </div>`
+                : ''
+            }
             <div class="bar-wrap">
               <div class="bar-label">
-                <span>HP ${h.hp}/${h.maxHp}${h.shield > 0 ? ` (+${h.shield})` : ''}</span>
+                <span>HP ${h.hp}/${h.maxHp}</span>
                 <span>${isDead ? 'FALLEN' : `${hpPct}%`}</span>
               </div>
               <div class="bar-track"><div class="bar-fill bar-hp" style="width:${hpPct}%"></div></div>
@@ -933,6 +1012,7 @@ function renderCombat(vp) {
               <div class="bar-label"><span>MP ${h.mp}/${h.maxMp}</span><span>${mpPct}%</span></div>
               <div class="bar-track"><div class="bar-fill bar-mp" style="width:${mpPct}%"></div></div>
             </div>
+            ${berserkPct > 0 ? `<span class="berserk-pill">Berserk +${berserkPct}% ATK</span>` : ''}
             ${renderStatusTags(h.statuses)}
           </div>
         </div>
@@ -943,7 +1023,9 @@ function renderCombat(vp) {
   const enemiesStageHtml = combat.enemies
     .map((e, idx) => {
       const hpPct = Math.round((e.hp / e.maxHp) * 100);
+      const shdPct = e.shield > 0 ? Math.min(100, Math.round((e.shield / Math.max(30, e.maxHp * 0.35)) * 100)) : 0;
       const isDead = e.hp <= 0;
+      const isActingEnemy = isEnemyPhase && idx === combat.activeEnemyIdx && !isDead;
       const intent = e.currentIntent;
       const spriteCls = isDead
         ? 'sprite-dead'
@@ -951,15 +1033,22 @@ function renderCombat(vp) {
           ? 'sprite-hover'
           : 'sprite-alive';
       const sz = e.isBoss ? 116 : enemySpriteSize;
+      const shieldHtml =
+        e.shield > 0 && !isDead
+          ? `<div class="shield-dome-aura"></div><div class="shield-crest" title="Active Shield absorbs ${e.shield} damage">🛡️ ${e.shield}</div>`
+          : '';
       return `
-        <div class="unit-pedestal ${e.isBoss ? 'boss-unit' : ''} ${isDead ? 'dead' : ''}" data-battle-enemy-idx="${idx}">
+        <div class="unit-pedestal ${e.isBoss ? 'boss-unit' : ''} ${isActingEnemy ? 'active-enemy-turn' : ''} ${isDead ? 'dead' : ''}" data-battle-enemy-idx="${idx}">
           <div class="target-overlay"><span class="target-float-tag"></span></div>
           ${
-            !isDead && intent
-              ? `<div class="pedestal-top-tag intent" title="${intent.description}">Next: ${intent.name}</div>`
-              : ''
+            isActingEnemy
+              ? '<div class="pedestal-top-tag enemy-acting">⚔️ ACTING NOW</div>'
+              : !isDead && intent
+                ? `<div class="pedestal-top-tag intent" title="${intent.description}">Next: ${intent.name}</div>`
+                : ''
           }
           <div class="pedestal-sprite-wrap ${spriteCls}">
+            ${shieldHtml}
             ${getSpriteSvg(e.icon, sz)}
             <div class="ground-shadow"></div>
           </div>
@@ -968,9 +1057,17 @@ function renderCombat(vp) {
               <strong style="color:${e.isBoss ? '#ff9d9d' : 'var(--gold)'};font-size:0.84rem;">${e.name}</strong>
               <span style="font-size:0.68rem;color:var(--text-muted);">A:${e.atk} D:${e.def}</span>
             </div>
+            ${
+              e.shield > 0
+                ? `<div class="bar-wrap">
+                     <div class="bar-label" style="color:#85d8ff;"><span>SHIELD</span><span>${e.shield}</span></div>
+                     <div class="bar-track"><div class="bar-fill bar-shield" style="width:${shdPct}%"></div></div>
+                   </div>`
+                : ''
+            }
             <div class="bar-wrap">
               <div class="bar-label">
-                <span>HP ${e.hp}/${e.maxHp}${e.shield > 0 ? ` (+${e.shield})` : ''}</span>
+                <span>HP ${e.hp}/${e.maxHp}</span>
                 <span>${isDead ? 'SLAIN' : `${hpPct}%`}</span>
               </div>
               <div class="bar-track"><div class="bar-fill bar-hp" style="width:${hpPct}%"></div></div>
@@ -983,10 +1080,18 @@ function renderCombat(vp) {
     .join('');
 
   let actionHtml = '';
-  if (!canControl) {
+  if (isEnemyPhase) {
+    const acting = combat.enemies[combat.activeEnemyIdx];
     actionHtml = `
       <div class="action-box">
-        <strong>Waiting for Player ${activeHero.owner}</strong> to command <strong>${activeHero.name}</strong> (${activeHero.title})...
+        <strong style="color:#ff9d9d;">👹 Enemy Turn in Progress...</strong>
+        <span class="muted"> ${acting ? `${acting.name} is preparing ${acting.currentIntent?.name || 'an attack'}` : 'Resolving enemy turns'}...</span>
+      </div>
+    `;
+  } else if (!canControl) {
+    actionHtml = `
+      <div class="action-box">
+        <strong>Waiting for ${activeHero ? `Player ${activeHero.owner}` : 'ally'}</strong> to command <strong>${activeHero ? activeHero.name : 'hero'}</strong>...
       </div>
     `;
   } else {
@@ -1032,16 +1137,17 @@ function renderCombat(vp) {
   vp.innerHTML = `
     <div class="panel-header">
       <h2>${combat.isBoss ? 'FINAL BOSS BATTLE' : combat.isElite ? 'Elite Encounter' : 'Monster Battle'} — Round ${combat.round}</h2>
-      <span class="muted">${armedAction ? 'Click a pulsing target on the battlefield!' : 'Hover any skill to highlight valid targets.'}</span>
+      <span class="muted">${isEnemyPhase ? 'Enemy Turn!' : armedAction ? 'Click a pulsing target on the battlefield!' : 'Hover any skill to highlight valid targets.'}</span>
     </div>
-    <div class="webgl-battle-stage">
+    <div class="webgl-battle-stage" id="webgl-battle-stage">
       <div class="webgl-canvas-host" id="webgl-stage-host"></div>
+      <div class="turn-action-banner hidden" id="turn-action-banner"></div>
       <div class="stage-top-hud">
         <div>
           <div class="biome-title">${biome.name}</div>
           <div class="biome-sub">${biome.badge} &bull; ${biome.subtitle}</div>
         </div>
-        <span class="pill pill-gold">WebGL Scenic Battlefield</span>
+        <span class="pill pill-gold">${isEnemyPhase ? 'Enemy Turn' : 'Hero Turn'}</span>
       </div>
       <div class="stage-ground-row">
         <div class="stage-heroes-side">${heroesStageHtml}</div>
@@ -1121,7 +1227,7 @@ function renderCombat(vp) {
     });
   }
 
-  updateTargetHighlights(armedAction);
+  updateTargetHighlights(isEnemyPhase ? null : armedAction);
 }
 
 function spawnPopup(cardEl, text, cls) {
@@ -1135,80 +1241,120 @@ function spawnPopup(cardEl, text, cls) {
   }, 1200);
 }
 
-function applyCombatAnimations(prevSnap) {
+function getSpriteNormCenter(stageEl, selector) {
+  const target = stageEl && stageEl.querySelector(selector);
+  if (!stageEl || !target) return null;
+  const sRect = stageEl.getBoundingClientRect();
+  const tRect = target.getBoundingClientRect();
+  if (!sRect.width || !sRect.height) return null;
+  return {
+    x: (tRect.left + tRect.width * 0.5 - sRect.left) / sRect.width,
+    y: (tRect.top + tRect.height * 0.45 - sRect.top) / sRect.height
+  };
+}
+
+function applyCombatAnimations(prevSnap, anim) {
   const vp = el('stage-viewport');
   const combat = gameState.combat;
-  if (!combat || !prevSnap) return;
+  if (!combat) return;
+  const stageEl = el('webgl-battle-stage');
 
-  const roundAdvanced = combat.round > prevSnap.round;
+  if (anim) {
+    const isEnemyActor = anim.actorSide === 'enemy';
+    const actorSel = isEnemyActor
+      ? `[data-battle-enemy-idx="${anim.actorIdx}"] .pedestal-sprite-wrap`
+      : `[data-battle-hero-idx="${anim.actorIdx}"] .pedestal-sprite-wrap`;
+    const actorWrap = vp.querySelector(actorSel);
+    if (actorWrap && anim.animStyle !== 'stun') {
+      actorWrap.classList.add(isEnemyActor ? 'anim-lunge-left' : 'anim-lunge-right');
+    }
 
-  if (prevSnap.activeHeroIdx >= 0) {
-    const actorWrap = vp.querySelector(`[data-battle-hero-idx="${prevSnap.activeHeroIdx}"] .pedestal-sprite-wrap`);
-    if (actorWrap) actorWrap.classList.add('anim-lunge-right');
+    const banner = el('turn-action-banner');
+    if (banner) {
+      const actorObj = isEnemyActor ? combat.enemies[anim.actorIdx] : gameState.party[anim.actorIdx];
+      banner.className = `turn-action-banner ${isEnemyActor ? 'enemy' : ''}`;
+      banner.textContent = `${isEnemyActor ? '👹' : '⚔️'} ${actorObj ? actorObj.name : ''} — ${anim.skillName}`;
+      setTimeout(() => {
+        if (banner && banner.parentNode) banner.classList.add('hidden');
+      }, 950);
+    }
+
+    // Play WebGL / FX canvas sword swing, arrow flight, or spell cast
+    if (anim.animStyle !== 'stun') {
+      const fromPos = getSpriteNormCenter(stageEl, actorSel) || { x: isEnemyActor ? 0.78 : 0.2, y: 0.65 };
+      const targetCoords = (anim.targetIndices || [])
+        .map((tIdx) => {
+          const tSel =
+            anim.targetSide === 'enemy'
+              ? `[data-battle-enemy-idx="${tIdx}"] .pedestal-sprite-wrap`
+              : `[data-battle-hero-idx="${tIdx}"] .pedestal-sprite-wrap`;
+          return getSpriteNormCenter(stageEl, tSel);
+        })
+        .filter(Boolean);
+      sceneRenderer.playActionAnimation(anim.animStyle, fromPos.x, fromPos.y, targetCoords);
+    }
   }
 
-  if (roundAdvanced) {
+  if (prevSnap) {
+    gameState.party.forEach((h, idx) => {
+      const prev = prevSnap.heroes.find((p) => p.uid === h.uid);
+      if (!prev) return;
+      const card = vp.querySelector(`[data-battle-hero-idx="${idx}"]`);
+      const wrap = card && card.querySelector('.pedestal-sprite-wrap');
+      if (!card) return;
+
+      const hpDiff = h.hp - prev.hp;
+      const shdDiff = h.shield - prev.shield;
+      if (hpDiff < 0) {
+        if (wrap) wrap.classList.add('anim-hit');
+        spawnPopup(card, `${hpDiff} HP`, 'dmg');
+      } else if (shdDiff < 0 && hpDiff === 0) {
+        if (wrap) wrap.classList.add('anim-hit');
+        spawnPopup(card, `${shdDiff} SHIELD`, 'shield');
+      } else if (hpDiff > 0) {
+        if (wrap) wrap.classList.add('anim-heal');
+        spawnPopup(card, `+${hpDiff} HP`, 'heal');
+      } else if (shdDiff > 0) {
+        if (wrap) wrap.classList.add('anim-heal');
+        spawnPopup(card, `+${shdDiff} SHIELD`, 'shield');
+      }
+    });
+
     combat.enemies.forEach((e, idx) => {
-      if (e.hp > 0) {
-        const eWrap = vp.querySelector(`[data-battle-enemy-idx="${idx}"] .pedestal-sprite-wrap`);
-        if (eWrap) eWrap.classList.add('anim-lunge-left');
+      const prev = prevSnap.enemies.find((p) => p.uid === e.uid);
+      if (!prev) return;
+      const card = vp.querySelector(`[data-battle-enemy-idx="${idx}"]`);
+      const wrap = card && card.querySelector('.pedestal-sprite-wrap');
+      if (!card) return;
+
+      const hpDiff = e.hp - prev.hp;
+      const shdDiff = e.shield - prev.shield;
+      if (hpDiff < 0) {
+        if (wrap) wrap.classList.add('anim-hit');
+        spawnPopup(card, `${hpDiff} DMG`, 'dmg');
+      } else if (shdDiff < 0 && hpDiff === 0) {
+        if (wrap) wrap.classList.add('anim-hit');
+        spawnPopup(card, `${shdDiff} SHIELD`, 'dmg');
+      } else if (hpDiff > 0) {
+        if (wrap) wrap.classList.add('anim-heal');
+        spawnPopup(card, `+${hpDiff} HP`, 'heal');
+      } else if (shdDiff > 0) {
+        spawnPopup(card, `+${shdDiff} SHIELD`, 'shield');
       }
     });
   }
 
-  gameState.party.forEach((h, idx) => {
-    const prev = prevSnap.heroes.find((p) => p.uid === h.uid);
-    if (!prev) return;
-    const card = vp.querySelector(`[data-battle-hero-idx="${idx}"]`);
-    const wrap = card && card.querySelector('.pedestal-sprite-wrap');
-    if (!card) return;
-
-    const hpDiff = h.hp - prev.hp;
-    const shdDiff = h.shield - prev.shield;
-    const normX = gameState.party.length === 1 ? 0.2 : 0.14 + idx * 0.14;
-
-    if (hpDiff < 0) {
-      if (wrap) wrap.classList.add('anim-hit');
-      spawnPopup(card, `${hpDiff} HP`, 'dmg');
-      sceneRenderer.triggerVfx('enemy', normX, 0.65);
-    } else if (hpDiff > 0) {
-      if (wrap) wrap.classList.add('anim-heal');
-      spawnPopup(card, `+${hpDiff} HP`, 'heal');
-      sceneRenderer.triggerVfx('heal', normX, 0.65);
-    } else if (shdDiff > 0) {
-      if (wrap) wrap.classList.add('anim-heal');
-      spawnPopup(card, `+${shdDiff} SHIELD`, 'shield');
-      sceneRenderer.triggerVfx('shield', normX, 0.65);
-    }
-  });
-
-  const eTotal = combat.enemies.length;
-  combat.enemies.forEach((e, idx) => {
-    const prev = prevSnap.enemies.find((p) => p.uid === e.uid);
-    if (!prev) return;
-    const card = vp.querySelector(`[data-battle-enemy-idx="${idx}"]`);
-    const wrap = card && card.querySelector('.pedestal-sprite-wrap');
-    if (!card) return;
-
-    const hpDiff = e.hp - prev.hp;
-    const shdDiff = e.shield - prev.shield;
-    const normX = eTotal === 1 ? 0.78 : 0.56 + (idx / Math.max(1, eTotal - 1)) * 0.34;
-
-    if (hpDiff < 0) {
-      if (wrap) wrap.classList.add('anim-hit');
-      spawnPopup(card, `${hpDiff} DMG`, 'dmg');
-      sceneRenderer.triggerVfx(pendingVfxHint || 'physical', normX, 0.65);
-    } else if (shdDiff < 0 && hpDiff === 0) {
-      if (wrap) wrap.classList.add('anim-hit');
-      spawnPopup(card, `${shdDiff} SHIELD`, 'dmg');
-      sceneRenderer.triggerVfx(pendingVfxHint || 'physical', normX, 0.65);
-    } else if (hpDiff > 0) {
-      if (wrap) wrap.classList.add('anim-heal');
-      spawnPopup(card, `+${hpDiff} HP`, 'heal');
-    } else if (shdDiff > 0) {
-      spawnPopup(card, `+${shdDiff} SHIELD`, 'shield');
-    }
-  });
+  if (Array.isArray(combat.lastPassiveEvents)) {
+    combat.lastPassiveEvents.forEach((ev) => {
+      if (ev.targetUid) {
+        const eIdx = combat.enemies.findIndex((e) => e.uid === ev.targetUid);
+        if (eIdx !== -1) spawnPopup(vp.querySelector(`[data-battle-enemy-idx="${eIdx}"]`), ev.text, 'passive');
+      } else if (ev.heroUid) {
+        const hIdx = gameState.party.findIndex((h) => h.uid === ev.heroUid);
+        if (hIdx !== -1) spawnPopup(vp.querySelector(`[data-battle-hero-idx="${hIdx}"]`), ev.text, 'passive');
+      }
+    });
+  }
 }
 
 /**
@@ -1217,13 +1363,13 @@ function applyCombatAnimations(prevSnap) {
 function updateTargetHighlights(action) {
   if (!gameState || gameState.phase !== 'COMBAT' || !gameState.combat) return;
   const combat = gameState.combat;
-  const activeHero = gameState.party[combat.activeHeroIdx];
+  const activeHero = combat.turnPhase === 'HERO_PHASE' ? gameState.party[combat.activeHeroIdx] : null;
   const vp = el('stage-viewport');
 
   const enemyCards = vp.querySelectorAll('[data-battle-enemy-idx]');
   const heroCards = vp.querySelectorAll('[data-battle-hero-idx]');
 
-  if (!action) {
+  if (!action || !activeHero) {
     enemyCards.forEach((c) => c.classList.remove('targetable-enemy', 'not-targetable'));
     heroCards.forEach((c) => c.classList.remove('targetable-ally', 'not-targetable'));
     return;

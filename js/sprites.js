@@ -72,6 +72,63 @@ export function getSpriteSvg(kind, size = 84) {
         <path d="M12 38c0-5 5-8 9-6-1 5-4 8-9 6z" fill="#63cf7d" stroke="#1a4f28" stroke-width="1.5"/>
       `);
 
+    case 'elf_archer':
+      return wrap(`
+        <!-- Quiver -->
+        <path d="M16 14l7-4 5 18-7 3z" fill="#6e4220" stroke="#2e190a" stroke-width="1.6"/>
+        <path d="M16 12l-2-5M20 11l-1-6" stroke="#d4a24c" stroke-width="2"/>
+        <!-- Forest Cloak & Tunic -->
+        <path d="M16 56l5-26h20l5 26H16z" fill="#235733" stroke="#102b18" stroke-width="2.2"/>
+        <path d="M24 30l7 16 7-16" fill="#3a854e"/>
+        <!-- Elven Ears & Face -->
+        <path d="M15 21l8-2-3 6zM47 21l-8-2 3 6z" fill="#f0cfa8" stroke="#6b4b2b" stroke-width="1.4"/>
+        <circle cx="31" cy="23" r="7" fill="#f0cfa8" stroke="#6b4b2b" stroke-width="1.6"/>
+        <path d="M22 18c2-6 14-8 17 0-5-2-12-2-17 0z" fill="#e6c453" stroke="#755a14" stroke-width="1.5"/>
+        <!-- Yew Longbow & Emerald Arrow -->
+        <path d="M46 10c10 12 10 30 0 44" fill="none" stroke="#b87e3a" stroke-width="3.4" stroke-linecap="round"/>
+        <path d="M46 11v42" stroke="#dcd3c2" stroke-width="1.4"/>
+        <path d="M30 33h24M49 29l7 4-7 4" stroke="#74f295" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      `);
+
+    case 'vampire':
+      return wrap(`
+        <!-- High Crimson Cape -->
+        <path d="M10 22l12-10h20l12 10-6 34H16L10 22z" fill="#4f121d" stroke="#1c0509" stroke-width="2.2"/>
+        <path d="M20 56l4-26h16l4 26H20z" fill="#1f1b24" stroke="#9e2a3b" stroke-width="1.8"/>
+        <!-- Pale Face & Fangs -->
+        <circle cx="32" cy="22" r="7.5" fill="#e3dce8" stroke="#3c2f47" stroke-width="1.8"/>
+        <path d="M25 18c2-5 12-5 14 0l-3-4-4 3-4-3z" fill="#18151f"/>
+        <circle cx="29" cy="21" r="1.5" fill="#ff3355"/><circle cx="35" cy="21" r="1.5" fill="#ff3355"/>
+        <path d="M29 26l1 2.5M35 26l-1 2.5" stroke="#ffffff" stroke-width="1.5"/>
+        <!-- Floating Blood Orb & Silver Rapier -->
+        <circle cx="13" cy="36" r="5" fill="#d92145" stroke="#ff9cb0" stroke-width="1.6"/>
+        <path d="M49 52V14M44 43h10" stroke="#cfd8e3" stroke-width="2.6" stroke-linecap="round"/>
+      `);
+
+    case 'werewolf':
+      return wrap(`
+        <!-- Muscular Fur Torso -->
+        <path d="M13 56l5-25h28l5 25H13z" fill="#4f4842" stroke="#1f1b17" stroke-width="2.2"/>
+        <path d="M21 31l11 16 11-16" fill="#6b6259"/>
+        <path d="M20 35l24 14M44 35L20 49" stroke="#7d4a26" stroke-width="3.5"/>
+        <!-- Wolf Head & Ears -->
+        <path d="M19 19l4-12 7 7h4l7-7 4 12-6 13H25l-6-13z" fill="#635a52" stroke="#1f1b17" stroke-width="2.2"/>
+        <circle cx="27" cy="21" r="2" fill="#ffae33"/><circle cx="37" cy="21" r="2" fill="#ffae33"/>
+        <path d="M28 29l4 3 4-3" fill="#211c19"/>
+        <!-- Claws -->
+        <path d="M8 38l8-4M8 43l8-3M56 38l-8-4M56 43l-8-3" stroke="#e8e2d5" stroke-width="2.6" stroke-linecap="round"/>
+      `);
+
+    case 'treant':
+      return wrap(`
+        <path d="M22 56l3-24h14l3 24H22z" fill="#593a20" stroke="#26170b" stroke-width="2.2"/>
+        <path d="M12 36l12-6M52 36l-12-6" stroke="#593a20" stroke-width="4.5" stroke-linecap="round"/>
+        <circle cx="32" cy="22" r="14" fill="#2e6b3a" stroke="#13361a" stroke-width="2"/>
+        <circle cx="22" cy="18" r="8" fill="#3c8549"/>
+        <circle cx="42" cy="18" r="8" fill="#3c8549"/>
+        <circle cx="27" cy="36" r="2.2" fill="#8cff9f"/><circle cx="37" cy="36" r="2.2" fill="#8cff9f"/>
+      `);
+
     case 'goblin':
       return wrap(`
         <path d="M12 24l10 4-6 7zM52 24l-10 4 6 7z" fill="#5b8a42" stroke="#223b16" stroke-width="2"/>

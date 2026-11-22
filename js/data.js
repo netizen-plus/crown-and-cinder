@@ -387,6 +387,204 @@ export const SKILLS = {
     revivePct: 0.5,
     healAmount: 65,
     cleanse: true
+  },
+
+  // === ELF ARCHER ===
+  sylvan_arrow: {
+    id: 'sylvan_arrow',
+    heroId: 'elf_archer',
+    name: 'Sylvan Arrow',
+    mpCost: 0,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.08,
+    ignoreDefPct: 0.35
+  },
+  piercing_volley: {
+    id: 'piercing_volley',
+    heroId: 'elf_archer',
+    name: 'Piercing Volley',
+    mpCost: 14,
+    targetType: 'all_enemies',
+    damageType: 'physical',
+    damageMult: 0.82,
+    ignoreDefPct: 0.25,
+    enemyStatus: { id: 'bleed', duration: 2, potency: 7 }
+  },
+  hunters_mark: {
+    id: 'hunters_mark',
+    heroId: 'elf_archer',
+    name: "Hunter's Mark",
+    mpCost: 12,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.15,
+    ignoreDefPct: 0.2,
+    enemyStatus: { id: 'vulnerable', duration: 2, potency: 0.25 }
+  },
+  starlight_barrage: {
+    id: 'starlight_barrage',
+    heroId: 'elf_archer',
+    name: 'Starlight Barrage',
+    mpCost: 18,
+    targetType: 'all_enemies',
+    damageType: 'physical',
+    damageMult: 1.3,
+    ignoreDefPct: 0.3
+  },
+  windwalk_grace: {
+    id: 'windwalk_grace',
+    heroId: 'elf_archer',
+    name: 'Windwalk Grace',
+    mpCost: 12,
+    targetType: 'all_allies',
+    damageType: 'support',
+    partyShield: 22,
+    partyStatus: { id: 'inspired', duration: 2, potency: 0.3 }
+  },
+  heartseeker_shot: {
+    id: 'heartseeker_shot',
+    heroId: 'elf_archer',
+    name: 'Heartseeker Shot',
+    mpCost: 20,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.75,
+    ignoreDefPct: 0.5
+  },
+
+  // === VAMPIRE ===
+  crimson_fang: {
+    id: 'crimson_fang',
+    heroId: 'vampire',
+    name: 'Crimson Fang',
+    mpCost: 0,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.05,
+    ignoreDefPct: 0.15
+  },
+  sanguine_feast: {
+    id: 'sanguine_feast',
+    heroId: 'vampire',
+    name: 'Sanguine Feast',
+    mpCost: 14,
+    targetType: 'enemy',
+    damageType: 'magic',
+    damageMult: 1.25,
+    ignoreDefPct: 0.25,
+    selfHeal: 18,
+    enemyStatus: { id: 'bleed', duration: 2, potency: 9 }
+  },
+  nightmist_veil: {
+    id: 'nightmist_veil',
+    heroId: 'vampire',
+    name: 'Nightmist Veil',
+    mpCost: 12,
+    targetType: 'all_allies',
+    damageType: 'support',
+    partyShield: 20,
+    partyStatus: { id: 'inspired', duration: 2, potency: 0.3 }
+  },
+  blood_moon_tempest: {
+    id: 'blood_moon_tempest',
+    heroId: 'vampire',
+    name: 'Blood Moon Tempest',
+    mpCost: 18,
+    targetType: 'all_enemies',
+    damageType: 'magic',
+    damageMult: 0.95,
+    ignoreDefPct: 0.2,
+    selfHeal: 22
+  },
+  exsanguinate: {
+    id: 'exsanguinate',
+    heroId: 'vampire',
+    name: 'Exsanguinate',
+    mpCost: 16,
+    targetType: 'enemy',
+    damageType: 'magic',
+    damageMult: 1.55,
+    ignoreDefPct: 0.3,
+    enemyStatus: { id: 'bleed', duration: 3, potency: 14 }
+  },
+  immortal_covenant: {
+    id: 'immortal_covenant',
+    heroId: 'vampire',
+    name: 'Immortal Covenant',
+    mpCost: 16,
+    targetType: 'all_allies',
+    damageType: 'support',
+    partyShield: 18,
+    partyStatus: { id: 'regeneration', duration: 2, potency: 14 }
+  },
+
+  // === WEREWOLF ===
+  feral_claw: {
+    id: 'feral_claw',
+    heroId: 'werewolf',
+    name: 'Feral Claw',
+    mpCost: 0,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.08,
+    ignoreDefPct: 0.1
+  },
+  rending_bite: {
+    id: 'rending_bite',
+    heroId: 'werewolf',
+    name: 'Rending Bite',
+    mpCost: 12,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.28,
+    ignoreDefPct: 0.2,
+    enemyStatus: { id: 'bleed', duration: 2, potency: 10 }
+  },
+  bloodmoon_howl: {
+    id: 'bloodmoon_howl',
+    heroId: 'werewolf',
+    name: 'Bloodmoon Howl',
+    mpCost: 12,
+    targetType: 'all_allies',
+    damageType: 'support',
+    partyStatuses: [
+      { id: 'inspired', duration: 2, potency: 0.3 },
+      { id: 'regeneration', duration: 2, potency: 10 }
+    ]
+  },
+  savage_frenzy: {
+    id: 'savage_frenzy',
+    heroId: 'werewolf',
+    name: 'Savage Frenzy',
+    mpCost: 16,
+    targetType: 'all_enemies',
+    damageType: 'physical',
+    damageMult: 1.05,
+    ignoreDefPct: 0.15,
+    enemyStatus: { id: 'bleed', duration: 2, potency: 9 }
+  },
+  primal_pounce: {
+    id: 'primal_pounce',
+    heroId: 'werewolf',
+    name: 'Primal Pounce',
+    mpCost: 15,
+    targetType: 'enemy',
+    damageType: 'physical',
+    damageMult: 1.5,
+    ignoreDefPct: 0.2,
+    stunOrWeaken: true
+  },
+  unbridled_rage: {
+    id: 'unbridled_rage',
+    heroId: 'werewolf',
+    name: 'Unbridled Rage',
+    mpCost: 10,
+    targetType: 'self',
+    damageType: 'support',
+    selfShield: 26,
+    selfHeal: 20,
+    selfStatus: { id: 'inspired', duration: 2, potency: 0.35 }
   }
 };
 
@@ -401,6 +599,10 @@ export const STARTER_HEROES = [
     atk: 20,
     def: 15,
     accent: '#c89b3c',
+    passive: {
+      name: 'Royal Aegis',
+      desc: '40% chance on action to summon Shields for self and a random ally equal to 20% of their Max HP.'
+    },
     basicSkills: ['iron_slash', 'shield_bash', 'aegis_guard'],
     learnableSkills: ['valiant_cleave', 'holy_judgement', 'unbreakable_bulwark']
   },
@@ -414,6 +616,10 @@ export const STARTER_HEROES = [
     atk: 26,
     def: 8,
     accent: '#4a85b5',
+    passive: {
+      name: 'Arcane Font',
+      desc: '35% chance on action to surge with arcane power and refill +50 MP.'
+    },
     basicSkills: ['arcane_bolt', 'fireball', 'mana_conduit'],
     learnableSkills: ['chain_lightning', 'frost_nova', 'meteor_storm']
   },
@@ -427,6 +633,10 @@ export const STARTER_HEROES = [
     atk: 23,
     def: 11,
     accent: '#c95632',
+    passive: {
+      name: 'Twin-Wyrm Strike',
+      desc: '40% chance on attacks for Ignis to strike again, creating a double attack (65% ATK bonus hit).'
+    },
     basicSkills: ['wyrm_lance', 'drakes_breath', 'draconic_roar'],
     learnableSkills: ['wyvern_dive', 'dragonscale_ward', 'inferno_fang']
   },
@@ -440,8 +650,63 @@ export const STARTER_HEROES = [
     atk: 19,
     def: 10,
     accent: '#4b9460',
+    passive: {
+      name: 'Call of the Treant',
+      desc: '45% chance on action to summon an Elder Treant (3t) that attacks enemies & shields you each turn.'
+    },
     basicSkills: ['thorn_whip', 'rejuvenating_bloom', 'barkskin_blessing'],
     learnableSkills: ['wrath_of_the_forest', 'sylvan_sanctuary', 'natures_rebirth']
+  },
+  {
+    id: 'elf_archer',
+    name: 'Aeliana Swiftwind',
+    title: 'The Elf Archer',
+    role: 'Precision Ranger & Marksman',
+    maxHp: 104,
+    maxMp: 55,
+    atk: 24,
+    def: 9,
+    accent: '#63b870',
+    passive: {
+      name: 'Eagle-Eye Critical',
+      desc: '35% chance for any damaging attack hit to become a Critical Strike dealing 1.75x damage.'
+    },
+    basicSkills: ['sylvan_arrow', 'piercing_volley', 'hunters_mark'],
+    learnableSkills: ['starlight_barrage', 'windwalk_grace', 'heartseeker_shot']
+  },
+  {
+    id: 'vampire',
+    name: 'Lord Cassian',
+    title: 'The Vampire',
+    role: 'Sanguine Duelist & Blood Mage',
+    maxHp: 116,
+    maxMp: 55,
+    atk: 22,
+    def: 10,
+    accent: '#b83b52',
+    passive: {
+      name: 'Vampiric Siphon',
+      desc: 'All damaging attacks heal Lord Cassian for 35% of the damage dealt (minimum +5 HP).'
+    },
+    basicSkills: ['crimson_fang', 'sanguine_feast', 'nightmist_veil'],
+    learnableSkills: ['blood_moon_tempest', 'exsanguinate', 'immortal_covenant']
+  },
+  {
+    id: 'werewolf',
+    name: 'Fenris Bloodhowl',
+    title: 'The Werewolf',
+    role: 'Primal Berserker & Ravager',
+    maxHp: 132,
+    maxMp: 42,
+    atk: 23,
+    def: 11,
+    accent: '#9c7853',
+    passive: {
+      name: 'Bloodmoon Berserk',
+      desc: 'Each point of missing HP increases attack power, scaling up to +125% bonus damage at low HP.'
+    },
+    basicSkills: ['feral_claw', 'rending_bite', 'bloodmoon_howl'],
+    learnableSkills: ['savage_frenzy', 'primal_pounce', 'unbridled_rage']
   }
 ];
 

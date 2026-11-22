@@ -223,6 +223,8 @@ export function createNewRun({
       skills: [...tpl.basicSkills],
       learnableSkills: [...tpl.learnableSkills],
       skillData: JSON.parse(JSON.stringify(tpl.skillData)),
+      passive: tpl.passive ? { ...tpl.passive } : null,
+      treant: null,
       statuses: []
     };
   };
@@ -571,6 +573,7 @@ export function startCombatFromIds(state, enemyIds, { isElite = false, isBoss = 
   for (const h of state.party) {
     h.shield = 0;
     h.statuses = [];
+    h.treant = null;
     if (h.hp > 0) {
       if (hasRelic(state, 'ironbound_buckler')) h.shield += 12;
       if (hasRelic(state, 'warlords_banner')) applyStatus(h, { id: 'inspired', duration: 1, potency: 0.3 });
@@ -585,7 +588,12 @@ export function startCombatFromIds(state, enemyIds, { isElite = false, isBoss = 
     isElite,
     bonusGold: bonusGold || 0,
     enemies,
-    activeHeroIdx: firstHeroIdx
+    turnPhase: 'HERO_PHASE',
+    activeHeroIdx: firstHeroIdx,
+    activeEnemyIdx: -1,
+    animSeq: 0,
+    lastAnim: null,
+    lastPassiveEvents: []
   };
 
   if (isBoss) {
@@ -595,6 +603,12 @@ export function startCombatFromIds(state, enemyIds, { isElite = false, isBoss = 
   }
 }
 
+export function getWerewolfBerserkMult(hero) {
+  if (!hero || hero.id !== 'werewolf' || !hero.maxHp) return 1;
+  const missingRatio = Math.max(0, (hero.maxHp - hero.hp) / hero.maxHp);
+  return 1 + missingRatio * 1.25;
+}
+
 export function estimateHitDamage(attacker, target, rawAmount, ignoreDefPct = 0) {
   let mult = 1;
   if (attacker) {
@@ -602,6 +616,7 @@ export function estimateHitDamage(attacker, target, rawAmount, ignoreDefPct = 0)
     const weak = attacker.statuses && attacker.statuses.find((s) => s.id === 'weakened');
     if (insp) mult *= 1 + (insp.potency || 0.3);
     if (weak) mult *= 1 - (weak.potency || 0.3);
+    if (attacker.id === 'werewolf') mult *= getWerewolfBerserkMult(attacker);
   }
   const vuln = target.statuses && target.statuses.find((s) => s.id === 'vulnerable');
   if (vuln) mult *= 1.25;
@@ -610,9 +625,22 @@ export function estimateHitDamage(attacker, target, rawAmount, ignoreDefPct = 0)
   return Math.max(4, Math.round(rawAmount * mult - effDef * 0.65));
 }
 
-function dealDamage(state, attacker, target, rawAmount, { ignoreDefPct = 0, isDirectAttack = false } = {}) {
+function dealDamage(state, attacker, target, rawAmount, { ignoreDefPct = 0, isDirectAttack = false, skipCrit = false } = {}) {
   if (target.hp <= 0) return 0;
-  const dmg = estimateHitDamage(attacker, target, rawAmount, ignoreDefPct);
+  let dmg = estimateHitDamage(attacker, target, rawAmount, ignoreDefPct);
+
+  if (attacker && attacker.id === 'elf_archer' && !skipCrit && nextRand(state) < 0.35) {
+    dmg = Math.round(dmg * 1.75);
+    if (state.combat) {
+      state.combat.lastPassiveEvents.push({
+        type: 'CRIT',
+        heroUid: attacker.uid,
+        targetUid: target.uid,
+        text: 'CRIT!'
+      });
+    }
+    addLog(state, `Passive [Eagle-Eye Critical]: ${attacker.name} lands a Critical Strike on ${target.name} (${dmg} dmg)!`, 'loot');
+  }
 
   const blocked = Math.min(target.shield, dmg);
   target.shield -= blocked;
@@ -642,32 +670,155 @@ function healUnit(state, unit, amount, isHero = true) {
   return actual;
 }
 
+function triggerClassPassives(state, hero, { didAttack, attackedTargets, totalDmgDealt }) {
+  const combat = state.combat;
+  if (!combat || !hero || hero.hp <= 0) return;
+
+  if (hero.id === 'knight') {
+    if (nextRand(state) < 0.4) {
+      const selfShd = Math.max(8, Math.round(hero.maxHp * 0.2));
+      hero.shield += selfShd;
+      const others = state.party.filter((a) => a.hp > 0 && a.uid !== hero.uid);
+      let allyMsg = '';
+      if (others.length > 0) {
+        const ally = pick(state, others);
+        const allyShd = Math.max(8, Math.round(ally.maxHp * 0.2));
+        ally.shield += allyShd;
+        allyMsg = ` & ${ally.name} (+${allyShd} Shield)`;
+        combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: ally.uid, text: `+${allyShd} AEGIS` });
+      }
+      combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: 'AEGIS SHIELD!' });
+      addLog(state, `Passive [Royal Aegis]: ${hero.name} summons +${selfShd} Shield for self${allyMsg}!`, 'heal');
+    }
+  } else if (hero.id === 'wizard') {
+    if (nextRand(state) < 0.35) {
+      const before = hero.mp;
+      hero.mp = Math.min(hero.maxMp, hero.mp + 50);
+      const gained = hero.mp - before;
+      combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: '+50 MP SURGE!' });
+      addLog(state, `Passive [Arcane Font]: ${hero.name} refills +${gained} MP!`, 'heal');
+    }
+  } else if (hero.id === 'dragon_tamer') {
+    if (didAttack && nextRand(state) < 0.4) {
+      let livingTargets = attackedTargets.filter((e) => e && e.hp > 0);
+      if (livingTargets.length === 0) {
+        const fallback = combat.enemies.find((e) => e.hp > 0);
+        if (fallback) livingTargets = [fallback];
+      }
+      if (livingTargets.length > 0) {
+        const hits = [];
+        for (const t of livingTargets) {
+          const d = dealDamage(state, hero, t, hero.atk * 0.65, { ignoreDefPct: 0.25, skipCrit: true });
+          hits.push(`${t.name} (${d})`);
+        }
+        combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: 'DOUBLE ATTACK!' });
+        addLog(state, `Passive [Twin-Wyrm Strike]: Ignis swoops in for a Double Attack on ${hits.join(', ')}!`, 'damage');
+      }
+    }
+  } else if (hero.id === 'druid') {
+    let justSummoned = false;
+    if (!hero.treant && nextRand(state) < 0.45) {
+      hero.treant = { turns: 3 };
+      justSummoned = true;
+      combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: 'TREANT SUMMONED!' });
+      addLog(state, `Passive [Call of the Treant]: ${hero.name} summons an Elder Treant (3 turns)!`, 'heal');
+    }
+    if (hero.treant && hero.treant.turns > 0) {
+      const livingFoes = combat.enemies.filter((e) => e.hp > 0);
+      if (livingFoes.length > 0) {
+        const foe = pick(state, livingFoes);
+        const tDmg = dealDamage(state, hero, foe, hero.atk * 0.75, { ignoreDefPct: 0.2, skipCrit: true });
+        hero.shield += 8;
+        if (!justSummoned) {
+          combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: 'TREANT STRIKE!' });
+        }
+        addLog(state, `Elder Treant slams ${foe.name} for ${tDmg} nature dmg (+8 Shield to ${hero.name})!`, 'damage');
+      }
+      if (!justSummoned) {
+        hero.treant.turns -= 1;
+        if (hero.treant.turns <= 0) {
+          hero.treant = null;
+          addLog(state, 'The Elder Treant returns to the earth.', 'system');
+        }
+      }
+    }
+  } else if (hero.id === 'vampire') {
+    if (didAttack && totalDmgDealt > 0) {
+      const steal = Math.max(5, Math.round(totalDmgDealt * 0.35));
+      const actual = healUnit(state, hero, steal, true);
+      if (actual > 0) {
+        combat.lastPassiveEvents.push({ type: 'PASSIVE', heroUid: hero.uid, text: `LIFESTEAL +${actual}` });
+        addLog(state, `Passive [Vampiric Siphon]: ${hero.name} heals +${actual} HP from the attack!`, 'heal');
+      }
+    }
+  }
+}
+
+function getActionAnimStyle(hero, skill) {
+  if (!skill) return 'sword';
+  if (skill.damageType === 'support') {
+    return skill.healAmount || skill.partyHeal || skill.revivePct ? 'heal' : 'shield';
+  }
+  if (hero.id === 'elf_archer') return 'arrow';
+  if (hero.id === 'werewolf') return 'claw';
+  if (skill.enemyStatus && skill.enemyStatus.id === 'burn') return 'fire';
+  if (skill.damageType === 'magic') return 'arcane';
+  if (skill.damageType === 'nature') return 'nature';
+  return 'sword';
+}
+
 export function executeCombatAction(state, action) {
   if (state.phase !== 'COMBAT' || !state.combat) return;
   const combat = state.combat;
-  const hero = state.party[combat.activeHeroIdx];
-  if (!hero || hero.hp <= 0 || action.heroIndex !== combat.activeHeroIdx) return;
+  if (combat.turnPhase !== 'HERO_PHASE') return;
+  const heroIdx = combat.activeHeroIdx;
+  const hero = state.party[heroIdx];
+  if (!hero || hero.hp <= 0 || action.heroIndex !== heroIdx) return;
+
+  combat.lastPassiveEvents = [];
+  let didAttack = false;
+  let attackedTargets = [];
+  let totalDmgDealt = 0;
+
+  let animStyle = 'sword';
+  let targetSide = 'enemy';
+  let targetIndices = [0];
+  let skillName = 'Attack';
 
   if (action.kind === 'DEFEND') {
     hero.shield += 12;
     const mpBefore = hero.mp;
     hero.mp = Math.min(hero.maxMp, hero.mp + 8);
+    animStyle = 'shield';
+    targetSide = 'hero';
+    targetIndices = [heroIdx];
+    skillName = 'Defend & Focus';
     addLog(state, `${hero.name} braces and focuses (+12 Shield, +${hero.mp - mpBefore} MP).`, 'system');
   } else if (action.kind === 'SKILL') {
     const skill = getHeroSkill(hero, action.skillId);
     if (!skill || !hero.skills.includes(skill.id) || hero.mp < skill.mpCost) return;
 
     hero.mp -= skill.mpCost;
+    skillName = skill.name;
+    animStyle = getActionAnimStyle(hero, skill);
     const livingEnemies = combat.enemies.filter((e) => e.hp > 0);
     const livingHeroes = state.party.filter((h) => h.hp > 0);
 
     if (skill.targetType === 'enemy') {
-      const target = combat.enemies[action.targetIndex] || livingEnemies[0];
+      const tIdx = combat.enemies[action.targetIndex] && combat.enemies[action.targetIndex].hp > 0
+        ? action.targetIndex
+        : combat.enemies.findIndex((e) => e.hp > 0);
+      const target = combat.enemies[tIdx];
       if (!target || target.hp <= 0) return;
+      targetSide = 'enemy';
+      targetIndices = [tIdx];
       const dmg = dealDamage(state, hero, target, hero.atk * skill.damageMult, {
         ignoreDefPct: skill.ignoreDefPct || 0,
         isDirectAttack: skill.damageType === 'physical'
       });
+      didAttack = true;
+      attackedTargets = [target];
+      totalDmgDealt += dmg;
       let extra = '';
       if (skill.stunOrWeaken && target.hp > 0) {
         if (!target.isBoss && nextRand(state) < 0.75) {
@@ -690,38 +841,55 @@ export function executeCombatAction(state, action) {
     } else if (skill.targetType === 'enemy_splash') {
       const primary = combat.enemies[action.targetIndex] || livingEnemies[0];
       if (!primary || primary.hp <= 0) return;
+      didAttack = true;
+      attackedTargets = [...livingEnemies];
+      targetSide = 'enemy';
+      targetIndices = combat.enemies.map((e, i) => (e.hp > 0 ? i : -1)).filter((i) => i !== -1);
       const parts = [];
       for (const e of livingEnemies) {
         const mult = e.uid === primary.uid ? skill.damageMult : skill.splashMult;
         const dmg = dealDamage(state, hero, e, hero.atk * mult, { ignoreDefPct: skill.ignoreDefPct || 0 });
+        totalDmgDealt += dmg;
         if (skill.enemyStatus && e.hp > 0) applyStatus(e, skill.enemyStatus);
         parts.push(`${e.name} (${dmg})`);
       }
       addLog(state, `${hero.name} cast ${skill.name}: ${parts.join(', ')}.`, 'damage');
     } else if (skill.targetType === 'all_enemies') {
+      didAttack = true;
+      attackedTargets = [...livingEnemies];
+      targetSide = 'enemy';
+      targetIndices = combat.enemies.map((e, i) => (e.hp > 0 ? i : -1)).filter((i) => i !== -1);
       const parts = [];
       for (const e of livingEnemies) {
         const dmg = dealDamage(state, hero, e, hero.atk * skill.damageMult, {
           ignoreDefPct: skill.ignoreDefPct || 0,
           isDirectAttack: skill.damageType === 'physical'
         });
+        totalDmgDealt += dmg;
         if (skill.enemyStatus && e.hp > 0) applyStatus(e, skill.enemyStatus);
         parts.push(`${e.name} (${dmg})`);
       }
       if (skill.selfShield) hero.shield += skill.selfShield;
       addLog(state, `${hero.name} unleashed ${skill.name} hitting ${parts.join(', ')}.`, 'damage');
     } else if (skill.targetType === 'self') {
+      targetSide = 'hero';
+      targetIndices = [heroIdx];
       if (skill.selfShield) hero.shield += skill.selfShield;
+      if (skill.selfHeal) healUnit(state, hero, skill.selfHeal, true);
       if (skill.selfStatus) applyStatus(hero, skill.selfStatus);
       if (skill.partyShield) {
         for (const ally of livingHeroes) {
           if (ally.uid !== hero.uid) ally.shield += skill.partyShield;
         }
+        targetIndices = state.party.map((h, i) => (h.hp > 0 ? i : -1)).filter((i) => i !== -1);
       }
       addLog(state, `${hero.name} activated ${skill.name}!`, 'heal');
     } else if (skill.targetType === 'ally' || skill.targetType === 'ally_or_dead') {
-      const target = state.party[action.targetIndex] || hero;
+      const aIdx = state.party[action.targetIndex] ? action.targetIndex : heroIdx;
+      const target = state.party[aIdx];
       if (target.hp <= 0 && skill.targetType !== 'ally_or_dead') return;
+      targetSide = 'hero';
+      targetIndices = [aIdx];
       if (target.hp <= 0 && skill.revivePct) {
         target.hp = Math.max(1, Math.round(target.maxHp * skill.revivePct));
         target.statuses = [];
@@ -746,6 +914,8 @@ export function executeCombatAction(state, action) {
         addLog(state, `${msg}.`, 'heal');
       }
     } else if (skill.targetType === 'all_allies') {
+      targetSide = 'hero';
+      targetIndices = state.party.map((h, i) => (h.hp > 0 ? i : -1)).filter((i) => i !== -1);
       for (const ally of livingHeroes) {
         if (skill.partyShield) ally.shield += skill.partyShield;
         if (skill.partyHeal) healUnit(state, ally, skill.partyHeal, true);
@@ -759,10 +929,15 @@ export function executeCombatAction(state, action) {
     const item = CONSUMABLES.find((c) => c.id === action.itemId);
     if (!invEntry || !item) return;
 
+    skillName = item.name;
     const eff = item.effect;
     if (item.targetType === 'ally' || item.targetType === 'ally_or_dead') {
-      const target = state.party[action.targetIndex] || hero;
+      const aIdx = state.party[action.targetIndex] ? action.targetIndex : heroIdx;
+      const target = state.party[aIdx];
       if (target.hp <= 0 && item.targetType !== 'ally_or_dead') return;
+      targetSide = 'hero';
+      targetIndices = [aIdx];
+      animStyle = 'heal';
       if (target.hp <= 0 && eff.revivePct) {
         target.hp = Math.max(1, Math.round(target.maxHp * eff.revivePct));
         target.statuses = [];
@@ -782,6 +957,9 @@ export function executeCombatAction(state, action) {
         addLog(state, `${hero.name} used ${item.name} on ${target.name} (${details.join(', ')}).`, 'heal');
       }
     } else if (item.targetType === 'all_allies') {
+      targetSide = 'hero';
+      targetIndices = state.party.map((h, i) => (h.hp > 0 ? i : -1)).filter((i) => i !== -1);
+      animStyle = eff.partyShield ? 'shield' : 'heal';
       for (const ally of state.party.filter((h) => h.hp > 0)) {
         if (eff.partyHeal) healUnit(state, ally, eff.partyHeal, true);
         if (eff.partyShield) ally.shield += eff.partyShield;
@@ -790,8 +968,11 @@ export function executeCombatAction(state, action) {
       }
       addLog(state, `${hero.name} used ${item.name}!`, 'heal');
     } else if (item.targetType === 'all_enemies') {
+      targetSide = 'enemy';
+      targetIndices = combat.enemies.map((e, i) => (e.hp > 0 ? i : -1)).filter((i) => i !== -1);
+      animStyle = 'fire';
       for (const e of combat.enemies.filter((m) => m.hp > 0)) {
-        const dmg = dealDamage(state, hero, e, eff.aoeDamage, { ignoreDefPct: 0.4 });
+        const dmg = dealDamage(state, hero, e, eff.aoeDamage, { ignoreDefPct: 0.4, skipCrit: true });
         if (eff.status && e.hp > 0) applyStatus(e, eff.status);
         addLog(state, `${item.name} scorched ${e.name} for ${dmg} dmg!`, 'damage');
       }
@@ -800,6 +981,21 @@ export function executeCombatAction(state, action) {
     invEntry.qty -= 1;
     state.inventory = state.inventory.filter((i) => i.qty > 0);
   }
+
+  if (action.kind === 'SKILL' || action.kind === 'DEFEND') {
+    triggerClassPassives(state, hero, { didAttack, attackedTargets, totalDmgDealt });
+  }
+
+  combat.animSeq = (combat.animSeq || 0) + 1;
+  combat.lastAnim = {
+    seq: combat.animSeq,
+    actorSide: 'hero',
+    actorIdx: heroIdx,
+    targetSide,
+    targetIndices,
+    skillName,
+    animStyle
+  };
 
   if (combat.enemies.every((e) => e.hp <= 0)) {
     handleCombatVictory(state);
@@ -813,122 +1009,200 @@ export function executeCombatAction(state, action) {
     return;
   }
 
-  advanceCombatTurn(state);
+  if (action.kind !== 'ITEM') {
+    advanceToNextHeroOrEnemyPhase(state);
+  }
   state.version += 1;
 }
 
-function advanceCombatTurn(state) {
+function advanceToNextHeroOrEnemyPhase(state) {
   const combat = state.combat;
-  let safety = 0;
-
-  while (safety < 12) {
-    safety++;
-    let nextIdx = -1;
-    for (let i = combat.activeHeroIdx + 1; i < state.party.length; i++) {
-      const h = state.party[i];
-      if (h.hp <= 0) continue;
-      if (getStatus(h, 'stun')) {
-        h.shield = 0;
-        removeStatus(h, 'stun');
-        addLog(state, `${h.name} is Stunned and skips their turn!`, 'damage');
-        combat.activeHeroIdx = i;
-        continue;
-      }
-      nextIdx = i;
-      break;
+  for (let i = combat.activeHeroIdx + 1; i < state.party.length; i++) {
+    const h = state.party[i];
+    if (h.hp <= 0) continue;
+    if (getStatus(h, 'stun')) {
+      removeStatus(h, 'stun');
+      addLog(state, `${h.name} is Stunned and skips their turn!`, 'damage');
+      continue;
     }
-
-    if (nextIdx !== -1) {
-      state.party[nextIdx].shield = 0;
-      combat.activeHeroIdx = nextIdx;
-      return;
-    }
-
-    runEnemyPhase(state);
-    if (state.phase !== 'COMBAT') return;
-    runEndOfRound(state);
-    if (state.phase !== 'COMBAT') return;
-
-    combat.round += 1;
-    combat.activeHeroIdx = -1;
+    combat.turnPhase = 'HERO_PHASE';
+    combat.activeHeroIdx = i;
+    combat.activeEnemyIdx = -1;
+    return;
   }
+
+  // All heroes acted this round -> enter ENEMY_PHASE (step-by-step animated!)
+  const firstEnemyIdx = combat.enemies.findIndex((e) => e.hp > 0);
+  combat.turnPhase = 'ENEMY_PHASE';
+  combat.activeHeroIdx = -1;
+  combat.activeEnemyIdx = firstEnemyIdx;
 }
 
-function runEnemyPhase(state) {
+/**
+ * Executes ONE living enemy turn per step so each enemy plays its own attack animation.
+ */
+export function executeNextEnemyStep(state) {
+  if (state.phase !== 'COMBAT' || !state.combat) return;
   const combat = state.combat;
-  for (const enemy of [...combat.enemies]) {
-    if (enemy.hp <= 0) continue;
+  if (combat.turnPhase !== 'ENEMY_PHASE') return;
 
+  const enemyIdx = combat.activeEnemyIdx;
+  const enemy = combat.enemies[enemyIdx];
+
+  if (enemy && enemy.hp > 0) {
     if (getStatus(enemy, 'stun')) {
-      enemy.shield = 0;
       removeStatus(enemy, 'stun');
       addLog(state, `${enemy.name} is Stunned and misses their turn!`, 'system');
       enemy.intentIndex = (enemy.intentIndex + 1) % enemy.intents.length;
       enemy.currentIntent = enemy.intents[enemy.intentIndex];
-      continue;
-    }
+      combat.animSeq = (combat.animSeq || 0) + 1;
+      combat.lastAnim = {
+        seq: combat.animSeq,
+        actorSide: 'enemy',
+        actorIdx: enemyIdx,
+        targetSide: 'enemy',
+        targetIndices: [enemyIdx],
+        skillName: 'Stunned!',
+        animStyle: 'stun'
+      };
+    } else {
+      // Enemy shield decays by 50% at the start of its turn instead of vanishing silently
+      enemy.shield = Math.floor(enemy.shield * 0.5);
+      const intent = enemy.currentIntent;
+      const livingHeroIndices = state.party.map((h, i) => (h.hp > 0 ? i : -1)).filter((i) => i !== -1);
 
-    enemy.shield = 0;
-    const intent = enemy.currentIntent;
-    const livingHeroes = state.party.filter((h) => h.hp > 0);
-    if (livingHeroes.length === 0) break;
+      let targetSide = 'hero';
+      let targetIndices = [];
+      let animStyle = 'enemy_slash';
 
-    if (intent.type === 'attack') {
-      const taunters = livingHeroes.filter((h) => getStatus(h, 'taunt'));
-      const target = pick(state, taunters.length > 0 ? taunters : livingHeroes);
-      const dmg = dealDamage(state, enemy, target, enemy.atk * (intent.mult || 1), { isDirectAttack: true });
-      if (intent.status && target.hp > 0) applyStatus(target, intent.status);
-      if (intent.healSelfPct && enemy.hp > 0) {
-        healUnit(state, enemy, Math.max(4, Math.round(dmg * intent.healSelfPct)), false);
+      if (livingHeroIndices.length > 0) {
+        if (intent.type === 'attack') {
+          const taunterIndices = livingHeroIndices.filter((i) => getStatus(state.party[i], 'taunt'));
+          const tIdx = pick(state, taunterIndices.length > 0 ? taunterIndices : livingHeroIndices);
+          const target = state.party[tIdx];
+          targetSide = 'hero';
+          targetIndices = [tIdx];
+          animStyle = intent.status && intent.status.id === 'burn' ? 'enemy_fire' : 'enemy_slash';
+          const dmg = dealDamage(state, enemy, target, enemy.atk * (intent.mult || 1), { isDirectAttack: true });
+          if (intent.status && target.hp > 0) applyStatus(target, intent.status);
+          if (intent.healSelfPct && enemy.hp > 0) {
+            healUnit(state, enemy, Math.max(4, Math.round(dmg * intent.healSelfPct)), false);
+          }
+          addLog(state, `${enemy.name} used ${intent.name} on ${target.name} for ${dmg} dmg!`, 'damage');
+        } else if (intent.type === 'aoe') {
+          targetSide = 'hero';
+          targetIndices = [...livingHeroIndices];
+          animStyle = intent.status && intent.status.id === 'burn' ? 'enemy_fire' : 'enemy_magic';
+          const hits = [];
+          let totalDmg = 0;
+          for (const hIdx of livingHeroIndices) {
+            const h = state.party[hIdx];
+            const dmg = dealDamage(state, enemy, h, enemy.atk * (intent.mult || 0.75), { isDirectAttack: false });
+            totalDmg += dmg;
+            if (intent.status && h.hp > 0) applyStatus(h, intent.status);
+            hits.push(`${h.name} (${dmg})`);
+          }
+          if (intent.healSelfPct && enemy.hp > 0) {
+            healUnit(state, enemy, Math.max(5, Math.round(totalDmg * intent.healSelfPct * 0.5)), false);
+          }
+          addLog(state, `${enemy.name} unleashed ${intent.name}: ${hits.join(', ')}!`, 'damage');
+        } else if (intent.type === 'buff') {
+          targetSide = 'enemy';
+          targetIndices = [enemyIdx];
+          animStyle = 'enemy_buff';
+          if (intent.shield) enemy.shield += intent.shield;
+          if (intent.heal) healUnit(state, enemy, intent.heal, false);
+          if (intent.status) applyStatus(enemy, intent.status);
+          if (intent.teamStatus) {
+            combat.enemies.forEach((allyEnemy, idx) => {
+              if (allyEnemy.hp > 0) {
+                applyStatus(allyEnemy, intent.teamStatus);
+                if (!targetIndices.includes(idx)) targetIndices.push(idx);
+              }
+            });
+          }
+          addLog(state, `${enemy.name} used ${intent.name}!`, 'system');
+        } else if (intent.type === 'summon') {
+          targetSide = 'enemy';
+          targetIndices = [enemyIdx];
+          animStyle = 'enemy_magic';
+          if (intent.shield) enemy.shield += intent.shield;
+          if (combat.enemies.filter((e) => e.hp > 0).length < 3) {
+            const tpl = MONSTERS.find((m) => m.id === intent.summonId) || MONSTERS[2];
+            const summoned = instantiateEnemy(state, tpl, {
+              stageScale: 1.05,
+              slotIdx: combat.enemies.length
+            });
+            combat.enemies.push(summoned);
+            addLog(state, `${enemy.name} cast ${intent.name} and summoned ${summoned.name}!`, 'damage');
+          } else {
+            enemy.shield += 18;
+            addLog(state, `${enemy.name} reinforced its wards (+18 Shield).`, 'system');
+          }
+        }
       }
-      addLog(state, `${enemy.name} used ${intent.name} on ${target.name} for ${dmg} dmg!`, 'damage');
-    } else if (intent.type === 'aoe') {
-      const hits = [];
-      let totalDmg = 0;
-      for (const h of livingHeroes) {
-        const dmg = dealDamage(state, enemy, h, enemy.atk * (intent.mult || 0.75), { isDirectAttack: false });
-        totalDmg += dmg;
-        if (intent.status && h.hp > 0) applyStatus(h, intent.status);
-        hits.push(`${h.name} (${dmg})`);
-      }
-      if (intent.healSelfPct && enemy.hp > 0) {
-        healUnit(state, enemy, Math.max(5, Math.round(totalDmg * intent.healSelfPct * 0.5)), false);
-      }
-      addLog(state, `${enemy.name} unleashed ${intent.name}: ${hits.join(', ')}!`, 'damage');
-    } else if (intent.type === 'buff') {
-      if (intent.shield) enemy.shield += intent.shield;
-      if (intent.heal) healUnit(state, enemy, intent.heal, false);
-      if (intent.status) applyStatus(enemy, intent.status);
-      if (intent.teamStatus) {
-        for (const allyEnemy of combat.enemies.filter((e) => e.hp > 0)) applyStatus(allyEnemy, intent.teamStatus);
-      }
-      addLog(state, `${enemy.name} used ${intent.name}!`, 'system');
-    } else if (intent.type === 'summon') {
-      if (intent.shield) enemy.shield += intent.shield;
-      if (combat.enemies.filter((e) => e.hp > 0).length < 3) {
-        const tpl = MONSTERS.find((m) => m.id === intent.summonId) || MONSTERS[2];
-        const summoned = instantiateEnemy(state, tpl, { stageScale: 1.05 });
-        combat.enemies.push(summoned);
-        addLog(state, `${enemy.name} cast ${intent.name} and summoned ${summoned.name}!`, 'damage');
-      } else {
-        enemy.shield += 18;
-        addLog(state, `${enemy.name} reinforced its wards (+18 Shield).`, 'system');
-      }
-    }
 
-    if (state.party.every((h) => h.hp <= 0)) {
-      state.phase = 'DEFEAT';
-      addLog(state, 'Your heroes have fallen! Darkness claims the realm.', 'damage');
-      return;
-    }
-    if (combat.enemies.every((e) => e.hp <= 0)) {
-      handleCombatVictory(state);
-      return;
-    }
+      combat.animSeq = (combat.animSeq || 0) + 1;
+      combat.lastAnim = {
+        seq: combat.animSeq,
+        actorSide: 'enemy',
+        actorIdx: enemyIdx,
+        targetSide,
+        targetIndices,
+        skillName: intent.name,
+        animStyle
+      };
 
-    enemy.intentIndex = (enemy.intentIndex + 1) % enemy.intents.length;
-    enemy.currentIntent = enemy.intents[enemy.intentIndex];
+      enemy.intentIndex = (enemy.intentIndex + 1) % enemy.intents.length;
+      enemy.currentIntent = enemy.intents[enemy.intentIndex];
+    }
   }
+
+  if (state.party.every((h) => h.hp <= 0)) {
+    state.phase = 'DEFEAT';
+    addLog(state, 'Your heroes have fallen! Darkness claims the realm.', 'damage');
+    state.version += 1;
+    return;
+  }
+  if (combat.enemies.every((e) => e.hp <= 0)) {
+    handleCombatVictory(state);
+    state.version += 1;
+    return;
+  }
+
+  // Advance to next living enemy in this round
+  let nextEnemy = -1;
+  for (let i = enemyIdx + 1; i < combat.enemies.length; i++) {
+    if (combat.enemies[i].hp > 0) {
+      nextEnemy = i;
+      break;
+    }
+  }
+  if (nextEnemy !== -1) {
+    combat.activeEnemyIdx = nextEnemy;
+    state.version += 1;
+    return;
+  }
+
+  // All enemies acted -> End of Round ticks & start next round
+  runEndOfRound(state);
+  if (state.phase !== 'COMBAT') {
+    state.version += 1;
+    return;
+  }
+
+  combat.round += 1;
+  // Unblocked hero shields gently decay (retain 75%) between rounds so shields stay visible
+  for (const h of state.party) {
+    if (h.hp > 0 && h.shield > 0) {
+      h.shield = Math.floor(h.shield * 0.75);
+    }
+  }
+
+  combat.activeEnemyIdx = -1;
+  combat.activeHeroIdx = -1;
+  advanceToNextHeroOrEnemyPhase(state);
+  state.version += 1;
 }
 
 function tickUnitStatuses(state, unit, isHero) {
@@ -983,6 +1257,7 @@ function handleCombatVictory(state) {
   for (const h of state.party) {
     h.shield = 0;
     h.statuses = [];
+    h.treant = null;
     if (h.hp > 0 && hasRelic(state, 'emerald_heartwood')) {
       healUnit(state, h, 8, true);
       h.mp = Math.min(h.maxMp, h.mp + 5);

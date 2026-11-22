@@ -280,6 +280,9 @@ export class WebGLBattleScene {
     this.particles = [];
     this.ambient = [];
     this.slashes = [];
+    this.projectiles = [];
+    this.auras = [];
+    this.weapons = [];
     this.rafId = null;
     this.startTime = performance.now();
     this.lastFrame = this.startTime;
@@ -378,6 +381,85 @@ export class WebGLBattleScene {
     }
   }
 
+  playActionAnimation(animStyle, fromX, fromY, targets = []) {
+    if (!targets || targets.length === 0) {
+      targets = [{ x: fromX, y: fromY }];
+    }
+
+    const colorMap = {
+      sword: '#e6eef7',
+      claw: '#ff4f4f',
+      arrow: '#7df7a3',
+      fire: '#ff7a2b',
+      arcane: '#5cd4ff',
+      nature: '#5de888',
+      shield: '#6ec7ff',
+      heal: '#6eff9e',
+      enemy_slash: '#ff4f4f',
+      enemy_fire: '#ff6e26',
+      enemy_magic: '#c466ff',
+      enemy_buff: '#ffb84d'
+    };
+    const mainColor = colorMap[animStyle] || '#ffe39c';
+
+    if (animStyle === 'shield' || animStyle === 'heal' || animStyle === 'enemy_buff') {
+      this.flash = 0.28;
+      for (const t of targets) {
+        this.auras.push({
+          x: t.x,
+          y: t.y,
+          kind: animStyle,
+          color: mainColor,
+          life: 0.65,
+          maxLife: 0.65
+        });
+        this.triggerVfx(animStyle === 'enemy_buff' ? 'fire' : animStyle, t.x, t.y);
+      }
+      return;
+    }
+
+    if (animStyle === 'sword' || animStyle === 'claw' || animStyle === 'enemy_slash') {
+      this.flash = 0.4;
+      for (const t of targets) {
+        this.weapons.push({
+          x: t.x,
+          y: t.y,
+          kind: animStyle,
+          color: mainColor,
+          life: 0.45,
+          maxLife: 0.45
+        });
+        this.triggerVfx(animStyle === 'enemy_slash' ? 'enemy' : 'physical', t.x, t.y);
+      }
+      return;
+    }
+
+    // Projectile / Spell stream from caster -> target(s)
+    this.flash = 0.35;
+    this.auras.push({
+      x: fromX,
+      y: fromY,
+      kind: 'cast',
+      color: mainColor,
+      life: 0.45,
+      maxLife: 0.45
+    });
+
+    for (const t of targets) {
+      this.projectiles.push({
+        fromX,
+        fromY,
+        toX: t.x,
+        toY: t.y,
+        kind: animStyle,
+        color: mainColor,
+        life: 0.38,
+        maxLife: 0.38,
+        impacted: false
+      });
+    }
+  }
+
   triggerVfx(kind, normX = 0.72, normY = 0.62) {
     const palette = {
       physical: ['#ffe39c', '#ffffff', '#ff9e59'],
@@ -389,9 +471,9 @@ export class WebGLBattleScene {
       enemy: ['#ff4747', '#ff9c66', '#ffd1d1']
     };
     const cols = palette[kind] || palette.physical;
-    this.flash = kind === 'heal' || kind === 'shield' ? 0.25 : 0.45;
+    this.flash = kind === 'heal' || kind === 'shield' ? 0.25 : 0.42;
 
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 22; i++) {
       const ang = Math.random() * Math.PI * 2;
       const spd = 0.08 + Math.random() * 0.26;
       this.particles.push({
@@ -443,7 +525,6 @@ export class WebGLBattleScene {
       gl.uniform1f(this.uniforms.flash, this.flash);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     } else {
-      // Graceful Canvas2D fallback if WebGL is disabled
       const ctx = this.bgCanvas.getContext('2d');
       if (!ctx) return;
       const w = this.bgCanvas.width;
@@ -464,7 +545,6 @@ export class WebGLBattleScene {
     const h = this.fxCanvas.height;
     ctx.clearRect(0, 0, w, h);
 
-    // Ambient biome motes
     const biomeColor =
       this.biomeId === 'plains'
         ? 'rgba(255, 224, 130, 0.65)'
@@ -498,6 +578,154 @@ export class WebGLBattleScene {
       ctx.beginPath();
       ctx.arc(m.x * w, m.y * h, m.r, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Expanding Cast / Shield / Heal Auras
+    for (let i = this.auras.length - 1; i >= 0; i--) {
+      const a = this.auras[i];
+      a.life -= dt;
+      if (a.life <= 0) {
+        this.auras.splice(i, 1);
+        continue;
+      }
+      const prog = 1 - a.life / a.maxLife;
+      const cx = a.x * w;
+      const cy = a.y * h;
+      ctx.save();
+      ctx.globalAlpha = 1 - prog;
+      ctx.strokeStyle = a.color;
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 24 + prog * 48, 0, Math.PI * 2);
+      ctx.stroke();
+      if (a.kind === 'heal') {
+        ctx.fillStyle = 'rgba(110, 255, 158, 0.25)';
+        ctx.fillRect(cx - 24, cy - 60 * prog - 25, 48, 70);
+      }
+      ctx.restore();
+    }
+
+    // Animated Sword / Claw / Halberd Swings
+    for (let i = this.weapons.length - 1; i >= 0; i--) {
+      const wp = this.weapons[i];
+      wp.life -= dt;
+      if (wp.life <= 0) {
+        this.weapons.splice(i, 1);
+        continue;
+      }
+      const prog = 1 - wp.life / wp.maxLife;
+      const cx = wp.x * w;
+      const cy = wp.y * h;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.globalAlpha = 1 - prog * 0.6;
+
+      if (wp.kind === 'claw') {
+        ctx.strokeStyle = '#ff4a4a';
+        ctx.lineWidth = 4;
+        for (let k = -1; k <= 1; k++) {
+          const offset = k * 14;
+          ctx.beginPath();
+          ctx.moveTo(-36 + offset, -36);
+          ctx.lineTo(-36 + offset + 72 * Math.min(1, prog * 1.8), -36 + 72 * Math.min(1, prog * 1.8));
+          ctx.stroke();
+        }
+      } else {
+        // Sweeping Sword / Halberd Blade
+        const startAng = wp.kind === 'enemy_slash' ? -2.2 : -1.0;
+        const sweep = wp.kind === 'enemy_slash' ? -2.1 : 2.2;
+        const curAng = startAng + sweep * prog;
+        ctx.rotate(curAng);
+        // Hilt & gleaming blade
+        ctx.fillStyle = '#d4a24c';
+        ctx.fillRect(-6, -12, 12, 5);
+        ctx.fillStyle = wp.kind === 'enemy_slash' ? '#ff9c9c' : '#e8f1fa';
+        ctx.fillRect(-3, -64, 6, 54);
+        ctx.beginPath();
+        ctx.moveTo(-3, -64);
+        ctx.lineTo(0, -76);
+        ctx.lineTo(3, -64);
+        ctx.fill();
+        // Arc motion trail
+        ctx.strokeStyle = wp.color;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(0, 0, 58, -1.6, -0.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Animated Projectiles (Arrows, Fireballs, Arcane Bolts, Nature Vines)
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const pr = this.projectiles[i];
+      pr.life -= dt;
+      const prog = Math.min(1, 1 - pr.life / pr.maxLife);
+      const curX = pr.fromX + (pr.toX - pr.fromX) * prog;
+      const curY = pr.fromY + (pr.toY - pr.fromY) * prog - Math.sin(prog * Math.PI) * 0.08;
+
+      const px = curX * w;
+      const py = curY * h;
+      const dx = (pr.toX - pr.fromX) * w;
+      const dy = (pr.toY - pr.fromY) * h;
+      const angle = Math.atan2(dy, dx);
+
+      ctx.save();
+      ctx.translate(px, py);
+      if (pr.kind === 'arrow') {
+        ctx.rotate(angle);
+        ctx.strokeStyle = '#9effb8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-24, 0);
+        ctx.lineTo(14, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.moveTo(18, 0);
+        ctx.lineTo(8, -5);
+        ctx.lineTo(8, 5);
+        ctx.fill();
+      } else if (pr.kind === 'arcane' || pr.kind === 'enemy_magic') {
+        ctx.strokeStyle = pr.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-dx * 0.25, -dy * 0.25);
+        ctx.lineTo(-dx * 0.12 + 8, -dy * 0.12 - 10);
+        ctx.lineTo(0, 0);
+        ctx.stroke();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, 7, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // Fire / Nature Orb
+        ctx.fillStyle = pr.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff3b8';
+        ctx.beginPath();
+        ctx.arc(0, 0, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      if (pr.life <= 0) {
+        if (!pr.impacted) {
+          pr.impacted = true;
+          const vfxKind =
+            pr.kind === 'fire' || pr.kind === 'enemy_fire'
+              ? 'fire'
+              : pr.kind === 'nature'
+                ? 'nature'
+                : pr.kind === 'enemy_magic'
+                  ? 'enemy'
+                  : 'magic';
+          this.triggerVfx(vfxKind, pr.toX, pr.toY);
+        }
+        this.projectiles.splice(i, 1);
+      }
     }
 
     // Combat slash arcs
